@@ -116,7 +116,7 @@ class ConvPoolLayer(object):
         self.output = ReLU(pooled_out + self.b.dimshuffle('x', 0, 'x', 'x'))
 
         # self.L1 = abs(self.W).sum()
-        self.L1 = self.W.max(axis=0).sum()
+        self.L1 = abs(self.W).max(axis=2).sum() / np.prod(filter_shape[:2])
 
         self.params = [self.W, self.b]
 
@@ -409,22 +409,22 @@ def test_mlp(init_learning_rate=.1,
                           ' ran for %.2fm' % ((end_time - start_time) / 60.))
 
 
-def test_cnn(init_learning_rate=.1,
+def test_cnn(init_learning_rate=.02,
              init_momentum=.05,
-             n_epochs=10000,
+             n_epochs=20000,
              dataset='./data/ubiquitous.pkl',
              h=4,
              w=400,
-             batch_size=500,
-             convnames=['conv0', 'conv1'],
-             nkerns=[400, 200],
-             filtersizes=[(4,12), (1,10)],
-             poolsizes=[(1,100), (1,10)],
-             strides=[(1,20), (1,2)],
-             nodenums=[400, 20, 2],
-             dmlpnames=['fc0', 'fc1', 'softmax'],
-             ps=[0.5, 0.5],
-             l1_reg=0.001):
+             batch_size=600,
+             convnames=['conv0'],
+             nkerns=[600],
+             filtersizes=[(4,15)],
+             poolsizes=[(1,20)],
+             strides=[(1,10)],
+             nodenums=[400,50,2],
+             dmlpnames=['fc0','fc1','softmax'],
+             ps=[0.5,0.5],
+             l1_reg=0.01):
     ################
     # load dataset #
     ################
@@ -496,7 +496,7 @@ def test_cnn(init_learning_rate=.1,
 
     momentum = theano.shared(np.cast[theano.config.floatX](init_momentum), name='momentum')
     updates = []
-    for param in extractfeat.params +  classifier.params:
+    for param in extractfeat.params + classifier.params:
         param_update = theano.shared(param.get_value()*np.cast[theano.config.floatX](0.))
         updates.append((param,
             param - learning_rate * param_update))
@@ -551,13 +551,16 @@ def test_cnn(init_learning_rate=.1,
                 print('[Validation] epoch %i, minibatch %i/%i, validation error %f %%' %
                       (epoch, minibatch_index + 1, n_train_batches,
                        this_validation_loss * 100.))
-
+                # check if best model
                 if this_validation_loss < best_validation_loss:
                     if this_validation_loss < best_validation_loss *  \
                        improvement_threshold:
                         patience = max(patience, iter * patience_increase)
                     best_validation_loss = this_validation_loss
                     best_iter = iter
+                    # save the best model
+                    # with open('bestmodel.pkl', 'wb') as f:
+                    #     pkl.dump(classifier, f)
                     # test model
                     test_losses = [
                         test_model(i)[0]
@@ -571,12 +574,11 @@ def test_cnn(init_learning_rate=.1,
                             test_model(i)[1]
                             for i in xrange(n_test_batches)]
                     y_scores = np.array([a[1] for batch in test_py for a in batch])
-                    # print y_true, y_true.shape
-                    # print y_scores, y_scores.shape
+                    y_pred = np.array([score>0.5 for score in list(y_scores)])
                     fpr, tpr, _ = metrics.roc_curve(y_true, y_scores)
                     precision, recall, _ = metrics.precision_recall_curve(y_true, y_scores)
                     print '    ROC AUC score is {}'.format(metrics.roc_auc_score(y_true, y_scores))
-                    # print '    Precision score is {}'.format(metrics.precision_score(y_true, y_pred))
+                    print '    Precision score is {}'.format(metrics.precision_score(y_true, y_pred))
 
             if patience <= iter:
                 done_looping = True
@@ -596,10 +598,20 @@ def test_cnn(init_learning_rate=.1,
     print >> sys.stderr, ('The code for file ' +
                           os.path.split(__file__)[1] +
                           ' ran for %.2fm' % ((end_time - start_time) / 60.))
+    classifier = pkl.load(open('bestmodel.pkl', 'r'))
+    predictmodel = theano.function(
+            inputs=[classifier.input],
+            outputs=[classifier.y_pred])
+    test_set_x = test_set_x.get_value()
+    y_pred = predictmodel(test_set_x)
+    y_true = test_set_y.get_value()
+    print y_pred
+    print y_true
+
+
 
 
 if __name__ == '__main__':
-    # evaluate_cnn()
     # test_mlp(dataset='../DeepLearningTutorials/data/mnist.pkl.gz',
     #          names=['fc0', 'softmax'],
     #          nodenums=[28*28, 500, 10],
@@ -619,15 +631,4 @@ if __name__ == '__main__':
     #          nodenums=[100, 20, 10],
     #          dmlpnames=['fc0', 'fc1', 'softmax'],
     #          ps=[0.9, 0.9])
-    test_cnn(batch_size=400,
-             n_epochs=20000,
-             convnames=['conv0'],
-             nkerns=[600],
-             filtersizes=[(4,15)],
-             poolsizes=[(1,50)],
-             strides=[(1,10)],
-             dmlpnames=['fc0', 'softmax'],
-             nodenums=[200,2],
-             ps=[0.5],
-             l1_reg=0.05
-             )
+    test_cnn()
