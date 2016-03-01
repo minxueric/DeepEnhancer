@@ -43,8 +43,8 @@ def load_data(dataset):
 
 
 class LogisticRegression(object):
-    def __init__(self, name, input, n_in, n_out):
-        self.input= input
+    def __init__(self, name, x, y, n_in, n_out):
+        self.x= x
         self.name = name
         # weight matrix W (n_in, n_out)
         self.W = theano.shared(
@@ -57,29 +57,18 @@ class LogisticRegression(object):
                 name='b',
                 borrow=True)
         # p(y|x, w, b)
-        self.p_y_given_x = T.nnet.softmax(T.dot(input, self.W) + self.b)
+        self.p_y_given_x = T.nnet.softmax(T.dot(x, self.W) + self.b)
         self.y_pred = T.argmax(self.p_y_given_x, axis=1)
+        self.negative_log_likelihood = -T.mean(T.log(self.p_y_given_x)[T.arange(y.shape[0]), y])
+        self.errors = T.mean(T.neq(self.y_pred, y))
         # params
         self.params = [self.W, self.b]
 
-    def negative_log_likelihood(self, y):
-        return -T.mean(T.log(self.p_y_given_x)[T.arange(y.shape[0]), y])
-
-    def errors(self, y):
-        if y.ndim != self.y_pred.ndim:
-            raise TypeError(
-                    'y should have the same shape as self.y_pred',
-                    ('y', y.type, 'y_pred', self.y_pred.type))
-        if y.dtype.startswith('int'):
-            return T.mean(T.neq(self.y_pred, y))
-        else:
-            raise NotImplementedError()
-
 
 class ConvPoolLayer(object):
-    def __init__(self, rng, name, input, filter_shape, image_shape, poolsize, stride):
+    def __init__(self, rng, name, x, filter_shape, image_shape, poolsize, stride):
         assert image_shape[1] == filter_shape[1]
-        self.input = input
+        self.x = x
         self.name = name
 
         fan_in = np.prod(filter_shape[1:])
@@ -96,7 +85,7 @@ class ConvPoolLayer(object):
         self.b = theano.shared(value=b_values, borrow=True)
 
         conv_out = conv.conv2d(
-            input=input,
+            input=x,
             filters=self.W,
             filter_shape=filter_shape,
             image_shape=image_shape
@@ -118,10 +107,10 @@ class ConvPoolLayer(object):
 
 
 class DropoutHiddenLayer(object):
-    def __init__(self, rng, name, is_train, input, n_in, n_out, W=None, b=None, activation=ReLU, p=0.5):
+    def __init__(self, rng, name, is_train, x, n_in, n_out, W=None, b=None, activation=ReLU, p=0.5):
         """p is the probability of NOT dropping out a unit"""
         self.name = name
-        self.input = input
+        self.x = x
         if W is None:
             W_values = np.asarray(
                     rng.uniform(
@@ -143,16 +132,16 @@ class DropoutHiddenLayer(object):
         self.W = W
         self.b = b
 
-        lin_output= T.dot(input, self.W) + self.b
+        lin_output= T.dot(x, self.W) + self.b
         output = (
                 lin_output if activation is None
                 else activation(lin_output))
 
-        def drop(input, rng=rng, p=p):
+        def drop(x, rng=rng, p=p):
             """p is the probability of NOT dropping out a unit"""
             srng = RandomStreams(rng.randint(999999))
-            mask = srng.binomial(n=1, p=p, size=input.shape, dtype=theano.config.floatX)
-            return input * mask
+            mask = srng.binomial(n=1, p=p, size=x.shape, dtype=theano.config.floatX)
+            return x * mask
 
         train_output = drop(np.cast[theano.config.floatX](1./p) * output)
 
@@ -162,7 +151,7 @@ class DropoutHiddenLayer(object):
 
 
 class DMLP(object):
-    def __init__(self, rng, names, is_train, input, nodenums, ps, activation=ReLU):
+    def __init__(self, rng, names, is_train, x, y, nodenums, ps, activation=ReLU):
         assert len(names) == len(nodenums) - 1
         assert len(names) == len(ps) + 1
         self.layers = []
@@ -171,7 +160,7 @@ class DMLP(object):
                 rng=rng,
                 name=names[0],
                 is_train=is_train,
-                input=input,
+                x=x,
                 n_in=nodenums[0],
                 n_out=nodenums[1],
                 p=ps[0])
@@ -183,7 +172,7 @@ class DMLP(object):
                         rng=rng,
                         name=names[i+1],
                         is_train=is_train,
-                        input=self.layers[-1].output,
+                        x=self.layers[-1].output,
                         n_in=nodenums[i+1],
                         n_out=nodenums[i+2],
                         p=ps[i+1])
@@ -191,7 +180,8 @@ class DMLP(object):
         # construct output layer
         layer = LogisticRegression(
                 name=names[-1],
-                input=self.layers[-1].output,
+                x=self.layers[-1].output,
+                y=y,
                 n_in=nodenums[-2],
                 n_out=nodenums[-1])
         self.layers.append(layer)
@@ -205,7 +195,7 @@ class DMLP(object):
 
 
 class ConvFeat(object):
-    def __init__(self, rng, names, input, h, w, batch_size, nkerns, filtersizes, poolsizes, strides):
+    def __init__(self, rng, names, x, h, w, batch_size, nkerns, filtersizes, poolsizes, strides):
         self.layers = []
         # construct first layer: names[0]
         filter_shape = (nkerns[0], 1, filtersizes[0][0], filtersizes[0][1])
@@ -214,7 +204,7 @@ class ConvFeat(object):
         stride = strides[0]
         layer = ConvPoolLayer(rng=rng,
                               name=names[0],
-                              input=input,
+                              x=x,
                               filter_shape=filter_shape,
                               image_shape=image_shape,
                               poolsize=poolsize,
@@ -231,7 +221,7 @@ class ConvFeat(object):
                 stride = strides[i+1]
                 layer = ConvPoolLayer(rng=rng,
                                       name=names[i+1],
-                                      input=self.layers[-1].output,
+                                      x=self.layers[-1].output,
                                       filter_shape=filter_shape,
                                       image_shape=image_shape,
                                       poolsize=poolsize,
