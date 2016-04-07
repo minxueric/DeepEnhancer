@@ -1,6 +1,6 @@
 import gzip
 import cPickle as pkl
-from random import shuffle
+import hickle as hkl
 import matplotlib.pyplot as plt
 import heapq
 import numpy as np
@@ -23,9 +23,9 @@ EXON        = '/home/xumin/deepenhancer/temp/genes.gtf.gz'  # 963k exons(CDS) da
 
 # load whole genome sequence
 print 'loading whole genome sequence...'
-chrs = range(1,23)
+chrs = range(1, 23)
 chrs.extend(['X', 'Y'])
-keys = ['chr'+str(x) for x in chrs]
+keys = ['chr' + str(x) for x in chrs]
 sequences = dict()
 for i in range(24):
     fa = open('%s%s.fa' % (GENOME, keys[i]), 'r')
@@ -58,7 +58,7 @@ def loadindex(name='ubiquitous'):
 
 def chunks(l, n, o):
     """Yield successive n-sized chunks with o-sized overlaps from l."""
-    return [l[i: i+n] for i in range(0, len(l), n-o)]
+    return [l[i: i + n] for i in range(0, len(l), n-o)]
 
 def SeqLenDis(indexes):
     lengths = []
@@ -93,7 +93,7 @@ def checkseq(chrkey, start, end):
     sequence = sequences[chrkey][start:end]
     return ('n' not in sequence) and ('N' not in sequence)
 
-def genseq(indexes, pklfile, bedfile, rgnfile, l=400, overlap=10):
+def genseq(indexes, hklfile, bedfile, rgnfile, l=400, overlap=399):
     """generate chunked enhancer sequence according to loaded index"""
     # shuffle(indexes)    # shuffle chroms orders
     print 'generating chunked enhancer sequence samples...'
@@ -110,18 +110,22 @@ def genseq(indexes, pklfile, bedfile, rgnfile, l=400, overlap=10):
                 if checkseq(chrkey, start, end):
                     enhancers.append((chrkey, start, end, sequences[chrkey][start:end]))
             elif (end - start) < l and i > 0:
-                start = endpos - l
-                end = endpos
-                if checkseq(chrkey, start, end):
-                    enhancers.append((chrkey, start, end, sequences[chrkey][start:end]))
+                break
+                # start = endpos - l
+                # end = endpos
+                # if checkseq(chrkey, start, end):
+                #     enhancers.append((chrkey, start, end, sequences[chrkey][start:end]))
             elif (end - start) < l and i == 0:
                 mid = (end + start) / 2
                 start = mid - l / 2
                 end = mid + l / 2
-                if checkseq(chrkey, start, end):
-                    enhancers.append((chrkey, start, end, sequences[chrkey][start:end]))
+                for shift in range(-10, 10, 1):
+                    if checkseq(chrkey, start + shift, end + shift):
+                        enhancers.append((chrkey, start + shift, end + shift,
+                            sequences[chrkey][start + shift:end + shift]))
+                break
 
-    pkl.dump(enhancers, open(pklfile, 'w'))
+    hkl.dump(enhancers, hklfile, 'w')
     fb = open(bedfile, 'w')
     for enhancer in enhancers:
         fb.write('>%s.%010d.%010d\n%s\n' % enhancer)
@@ -133,7 +137,7 @@ def genseq(indexes, pklfile, bedfile, rgnfile, l=400, overlap=10):
     print '...After chunking, there are {} enhancers'.format(len(enhancers))
     return len(enhancers)
 
-def merge(a,b):
+def merge(a, b):
     """merge sort 2 sorted (a[:][0]) list a & b"""
     if a == []:
         return b
@@ -192,7 +196,7 @@ def stopreads(file, l):
                 nos[chrkey].append([start - l, end])
     return nos
 
-def genrand(num, indexes, pklfile, bedfile, rgnfile, l=400):
+def genrand(num, indexes, hklfile, bedfile, rgnfile, l=400):
     """generate random negative sequences"""
     print 'generating random negative sequence samples...'
     chrlens = [len(sequences[keys[i]]) for i in range(24)]
@@ -265,7 +269,7 @@ def genrand(num, indexes, pklfile, bedfile, rgnfile, l=400):
         # random site on the chrom
         u = random.random() * bins[keys[chrnum]][-1]
         z = bisect.bisect_left(bins[keys[chrnum]], u)
-        start = int(u + np.sum(noslens[keys[chrnum]][:(z+1)]))
+        start = int(u + np.sum(noslens[keys[chrnum]][:(z + 1)]))
         end = start + l
         if ('n' in sequences[keys[chrnum]][start:end]) or ('N' in sequences[keys[chrnum]][start:end]):
             continue
@@ -275,7 +279,7 @@ def genrand(num, indexes, pklfile, bedfile, rgnfile, l=400):
             done = (i == num)
 
     # save nonenhancers
-    pkl.dump(nonenhancers, open(pklfile, 'w'))
+    hkl.dump(nonenhancers, hklfile, 'w')
     fb = open(bedfile, 'w')
     for nonenhancer in nonenhancers:
         fb.write('>%s.%010d.%010d\n%s\n' % nonenhancer)
@@ -289,16 +293,16 @@ def genrand(num, indexes, pklfile, bedfile, rgnfile, l=400):
 
 def main(name='ubiquitous', l=400, overlap=10):
     # Files where to save seqs NAME = 'ubiquitous' or 'gm12878'
-    POSPKL = './data/%s_positive.pkl' % name
-    NEGPKL = './data/%s_negative.pkl' % name
-    POSBED = './data/%s_positive.fa' % name
-    NEGBED = './data/%s_negative.fa' % name
-    POSRGN = './data/%s_positive.rgn' % name
-    NEGRGN = './data/%s_negative.rgn' % name
+    POSHKL = './data/%s_positive_aug.hkl' % name
+    NEGHKL = './data/%s_negative_aug.hkl' % name
+    POSBED = './data/%s_positive_aug.fa' % name
+    NEGBED = './data/%s_negative_aug.fa' % name
+    POSRGN = './data/%s_positive_aug.rgn' % name
+    NEGRGN = './data/%s_negative_aug.rgn' % name
 
     indexes = loadindex(name)
-    num = genseq(indexes, POSPKL, POSBED, POSRGN, l=l, overlap=overlap)
-    genrand(num, indexes, NEGPKL, NEGBED, NEGRGN, l=l)
+    num = genseq(indexes, POSHKL, POSBED, POSRGN, l=l, overlap=overlap)
+    genrand(num, indexes, NEGHKL, NEGBED, NEGRGN, l=l)
     return
 
 if __name__ == "__main__":

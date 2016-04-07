@@ -66,23 +66,27 @@ class LogisticRegression(object):
 
 
 class ConvPoolLayer(object):
-    def __init__(self, rng, name, x, filter_shape, image_shape, poolsize, stride):
+    def __init__(self, rng, name, x, filter_shape, image_shape, poolsize, stride, activation=ReLU, W_init=None):
         assert image_shape[1] == filter_shape[1]
         self.x = x
         self.name = name
 
         fan_in = np.prod(filter_shape[1:])
-        fan_out = (filter_shape[0] * np.prod(filter_shape[2:]) /
-                   np.prod(poolsize))
-        W_bound = np.sqrt(6. / (fan_in + fan_out))
-        self.W = theano.shared(
-            np.asarray(
-                rng.uniform(low=-W_bound, high=W_bound, size=filter_shape),
-                dtype=theano.config.floatX),
-            borrow=True)
+        fan_out = (np.prod(filter_shape) / np.prod(poolsize))
+        W_bound = np.sqrt(50. / (fan_in + fan_out))
+        if W_init is not None:
+            self.W = theano.shared(
+                    value=W_bound * W_init.astype(theano.config.floatX),
+                    borrow=True)
+        else:
+            self.W = theano.shared(
+                    np.asarray(
+                        rng.uniform(low=-W_bound, high=W_bound, size=filter_shape),
+                        dtype=theano.config.floatX),
+                    borrow=True)
 
-        b_values = np.zeros((filter_shape[0],), dtype=theano.config.floatX)
-        self.b = theano.shared(value=b_values, borrow=True)
+        #b_values = np.zeros((filter_shape[0],), dtype=theano.config.floatX)
+        #self.b = theano.shared(value=b_values, borrow=True)
 
         conv_out = conv.conv2d(
             input=x,
@@ -91,19 +95,76 @@ class ConvPoolLayer(object):
             image_shape=image_shape
         )
 
-        pooled_out = downsample.max_pool_2d(
-            input=conv_out,
-            ds=poolsize,
-            ignore_border=True,
-            st=stride
-        )
+        if poolsize == [1, 1]:
+            pooled_out = conv_out
+        else:
+            pooled_out = downsample.max_pool_2d(
+                input=conv_out,
+                ds=poolsize,
+                ignore_border=True,
+                st=stride
+            )
 
-        self.output = ReLU(pooled_out + self.b.dimshuffle('x', 0, 'x', 'x'))
+        #self.output = activation(pooled_out + self.b.dimshuffle('x', 0, 'x', 'x'))
+        self.output = activation(pooled_out)
 
         # self.L1 = abs(self.W).sum()
         self.L1 = abs(self.W).max(axis=2).sum() / np.prod(filter_shape[:2])
 
-        self.params = [self.W, self.b]
+        # self.params = [self.W, self.b]
+        self.params = [self.W]
+
+
+class DropConvPoolLayer(object):
+    def __init__(self, rng, name, is_train, x, filter_shape, image_shape, poolsize, stride, gap=3, activation=ReLU, W_init=None):
+        assert image_shape[1] == filter_shape[1]
+        self.x = x
+        self.name = name
+
+        fan_in = np.prod(filter_shape[1:])
+        fan_out = (np.prod(filter_shape) / np.prod(poolsize))
+        W_bound = np.sqrt(50. / (fan_in + fan_out))
+        if W_init is not None:
+            self.W = theano.shared(
+                    value=W_bound * W_init.astype(theano.config.floatX),
+                    borrow=True)
+        else:
+            self.W = theano.shared(
+                    value=np.asarray(
+                        rng.uniform(low=-W_bound, high=W_bound, size=filter_shape),
+                        dtype=theano.config.floatX),
+                    borrow=True)
+
+        def drop(filters, rng=rng, p= (1 - 4 * float(gap)/filter_shape[-1])):
+            """p is the probability of NOT dropping out a unit"""
+            srng = RandomStreams(rng.randint(999999))
+            mask = srng.binomial(n=1, p=p, size=x.shape, dtype=theano.config.floatX)
+            return (1./p) * x * mask
+
+        inputx = T.switch(T.eq(is_train, 0), x, drop(x))
+
+        conv_out = conv.conv2d(
+            input=inputx,
+            filters=self.W,
+            filter_shape=filter_shape,
+            image_shape=image_shape
+        )
+
+        if poolsize == [1, 1]:
+            pooled_out = conv_out
+        else:
+            pooled_out = downsample.max_pool_2d(
+                input=conv_out,
+                ds=poolsize,
+                ignore_border=True,
+                st=stride
+            )
+
+        self.output = activation(pooled_out)
+
+        self.L1 = abs(self.W).max(axis=2).sum() / np.prod(filter_shape[:2])
+
+        self.params = [self.W]
 
 
 class DropoutHiddenLayer(object):
@@ -111,11 +172,12 @@ class DropoutHiddenLayer(object):
         """p is the probability of NOT dropping out a unit"""
         self.name = name
         self.x = x
+        bound = np.sqrt(6./(n_in+n_out))
         if W is None:
             W_values = np.asarray(
                     rng.uniform(
-                        low=-np.sqrt(6./(n_in+n_out)),
-                        high=np.sqrt(6./(n_in+n_out)),
+                        low=-bound,
+                        high=bound,
                         size=(n_in, n_out)
                         ),
                     dtype=theano.config.floatX)
@@ -125,8 +187,7 @@ class DropoutHiddenLayer(object):
 
         if b is None:
             # b_values = np.zeros((n_out,), dtype=theano.config.floatX)
-            # initial b to positive values, in the linear regime of ReLU
-            b_values = np.ones((n_out,), dtype=theano.config.floatX) * np.cast[theano.config.floatX](0.01)
+            b_values = np.ones((n_out,), dtype=theano.config.floatX) * np.cast[theano.config.floatX](bound)
             b = theano.shared(value=b_values, name='b', borrow=True)
 
         self.W = W
@@ -163,6 +224,7 @@ class DMLP(object):
                 x=x,
                 n_in=nodenums[0],
                 n_out=nodenums[1],
+                activation=activation,
                 p=ps[0])
         self.layers.append(layer)
         # construct hidden layers: names[1:-1]
@@ -175,6 +237,7 @@ class DMLP(object):
                         x=self.layers[-1].output,
                         n_in=nodenums[i+1],
                         n_out=nodenums[i+2],
+                        activation=activation,
                         p=ps[i+1])
                 self.layers.append(layer)
         # construct output layer
@@ -195,20 +258,34 @@ class DMLP(object):
 
 
 class ConvFeat(object):
-    def __init__(self, rng, names, x, h, w, batch_size, nkerns, filtersizes, poolsizes, strides):
+    def __init__(self, rng, names, is_train, x, h, w, batch_size, gap, nkerns, W_init, filtersizes, poolsizes, strides, activation=ReLU):
+        self.x = x
         self.layers = []
         # construct first layer: names[0]
         filter_shape = (nkerns[0], 1, filtersizes[0][0], filtersizes[0][1])
         image_shape = (batch_size, 1, h, w)
         poolsize = poolsizes[0]
         stride = strides[0]
-        layer = ConvPoolLayer(rng=rng,
-                              name=names[0],
-                              x=x,
-                              filter_shape=filter_shape,
-                              image_shape=image_shape,
-                              poolsize=poolsize,
-                              stride=stride)
+        # layer = ConvPoolLayer(rng=rng,
+        #                       name=names[0],
+        #                       x=x,
+        #                       filter_shape=filter_shape,
+        #                       image_shape=image_shape,
+        #                       poolsize=poolsize,
+        #                       stride=stride,
+        #                       activation=activation,
+        #                       W_init=W_init)
+        layer = DropConvPoolLayer(rng=rng,
+                                  name=names[0],
+                                  x=x,
+                                  filter_shape=filter_shape,
+                                  image_shape=image_shape,
+                                  poolsize=poolsize,
+                                  stride=stride,
+                                  activation=activation,
+                                  W_init=W_init,
+                                  is_train=is_train,
+                                  gap=gap)
         self.layers.append(layer)
         h = (h - filter_shape[2] + 1 - poolsize[0]) / stride[0] + 1
         w = (w - filter_shape[3] + 1 - poolsize[1]) / stride[1] + 1
@@ -225,14 +302,16 @@ class ConvFeat(object):
                                       filter_shape=filter_shape,
                                       image_shape=image_shape,
                                       poolsize=poolsize,
-                                      stride=stride)
+                                      stride=stride,
+                                      activation=activation)
                 self.layers.append(layer)
                 h = (h - filter_shape[2] + 1 - poolsize[0]) / stride[0] + 1
                 w = (w - filter_shape[3] + 1 - poolsize[1]) / stride[1] + 1
 
         self.output = self.layers[-1].output
 
-        self.L1 = sum([layer.L1 for layer in self.layers])
+        # self.L1 = sum([layer.L1 for layer in self.layers])
+        self.L1 = self.layers[0].L1
 
         self.outdim = (batch_size, nkerns[-1], h, w)
 

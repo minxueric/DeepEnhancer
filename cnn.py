@@ -7,28 +7,60 @@ import sklearn.metrics as metrics
 import theano
 import theano.tensor as T
 from layers import load_data, ConvFeat, DMLP
-from solvers import sgd, sgd_momentum, nesterov_momentum, adagrad, rmsprop, adadelta, adam
+from solvers import sgd_momentum, nesterov_momentum, adam
 
 
-def test_cnn(init_learning_rate=.04,
-             init_momentum=.05,
-             n_epochs=1000,
-             dataset='./data/ubiquitous.pkl',
+class CNN(object):
+    def __init__(self, convnames, x, y, h, w, batch_size, nkerns, filtersizes, poolsizes, strides,
+            dmlpnames, is_train, nodenums, ps, l1_reg):
+        rng = np.random.RandomState(23456)
+        self.x = x
+        self.is_train = is_train
+        extractfeat = ConvFeat(rng=rng,
+                               names=convnames,
+                               x=x.reshape((batch_size, 1, h, w)),
+                               h=h,
+                               w=w,
+                               batch_size=batch_size,
+                               nkerns=nkerns,
+                               filtersizes=filtersizes,
+                               poolsizes=poolsizes,
+                               strides=strides)
+        nextinput = extractfeat.output.flatten(2)
+        nodenums = [np.prod(extractfeat.outdim[1:])] + nodenums
+        dmlp = DMLP(rng=rng,
+                    names=dmlpnames,
+                    is_train=is_train,
+                    x=nextinput,
+                    y=y,
+                    nodenums=nodenums,
+                    ps=ps)
+        self.params = extractfeat.params + dmlp.params
+        self.cost = dmlp.negative_log_likelihood + l1_reg * extractfeat.L1
+        self.errors = dmlp.errors
+        self.p_y_given_x = dmlp.p_y_given_x
+        self.y_pred = dmlp.y_pred
+
+
+def test_cnn(dataset='./data/ubiquitous.pkl',
              h=4,
              w=400,
-             batch_size=500,
+             batch_size=400,
              convnames=['conv0'],
              nkerns=[600],
-             filtersizes=[(4,15)],
-             poolsizes=[(1,20)],
-             strides=[(1,10)],
-             nodenums=[400,50,2],
-             dmlpnames=['fc0','fc1','softmax'],
-             ps=[0.5,0.5],
+             filtersizes=[(4, 15)],
+             poolsizes=[(1, 20)],
+             strides=[(1, 10)],
+             nodenums=[400, 50, 2],
+             dmlpnames=['fc0', 'fc1', 'softmax'],
+             ps=[0.8, 0.8],
              l1_reg=0.05,
-             solver=rmsprop):
+             solver=adam,
+             init_learning_rate=1e-3,
+             init_momentum=.05,
+             n_epochs=5000):
     ################
-    # load dataset #
+    # LOAD DATASET #
     ################
     print '... load dataset {}'.format(dataset)
     datasets = load_data(dataset)
@@ -50,61 +82,47 @@ def test_cnn(init_learning_rate=.04,
     x = T.matrix('x')
     y = T.ivector('y')
     is_train = T.iscalar('is_train')
-    rng = np.random.RandomState(23455)
 
-    extractfeat = ConvFeat(rng=rng,
-                          names=convnames,
-                          input=x.reshape((batch_size, 1, h, w)),
-                          h=h,
-                          w=w,
-                          batch_size=batch_size,
-                          nkerns=nkerns,
-                          filtersizes=filtersizes,
-                          poolsizes=poolsizes,
-                          strides=strides)
-    input = extractfeat.output.flatten(2)
-    nodenums = [np.prod(extractfeat.outdim[1:])] + nodenums
-    classifier = DMLP(rng=rng,
-                      names=dmlpnames,
-                      is_train=is_train,
-                      input=input,
-                      nodenums=nodenums,
-                      ps=ps)
-    # add sparsity bias on convolution filters
-    cost = classifier.negative_log_likelihood(y) + l1_reg * extractfeat.L1
-    # test, validate, train functions
+    classifier = CNN(convnames=convnames,
+                     x=x, y=y, h=h, w=w,
+                     batch_size=batch_size,
+                     nkerns=nkerns,
+                     filtersizes=filtersizes,
+                     poolsizes=poolsizes,
+                     strides=strides,
+                     dmlpnames=dmlpnames,
+                     is_train=is_train,
+                     nodenums=nodenums,
+                     ps=ps,
+                     l1_reg=l1_reg)
+
     test_model = theano.function(
             inputs=[index],
-            outputs=[classifier.errors(y), classifier.p_y_given_x],
+            outputs=[classifier.errors, classifier.p_y_given_x],
             givens={
                 x: test_set_x[index * batch_size: (index + 1) * batch_size],
                 y: test_set_y[index * batch_size: (index + 1) * batch_size],
                 is_train: np.cast['int32'](0)})
     validate_model = theano.function(
             inputs=[index],
-            outputs=[classifier.errors(y), classifier.p_y_given_x],
+            outputs=[classifier.errors, classifier.p_y_given_x],
             givens={
                 x: valid_set_x[index * batch_size: (index + 1) * batch_size],
                 y: valid_set_y[index * batch_size: (index + 1) * batch_size],
                 is_train: np.cast['int32'](0)})
-    learning_rate = theano.shared(np.cast[theano.config.floatX](init_learning_rate))
-    momentum = theano.shared(np.cast[theano.config.floatX](init_momentum), name='momentum')
-    params = classifier.params + extractfeat.params
+    learning_rate = theano.shared(
+            value=np.cast[theano.config.floatX](init_learning_rate),
+            name='learning_rate')
+    momentum = theano.shared(
+            value=np.cast[theano.config.floatX](init_momentum),
+            name='momentum')
     if solver in [sgd_momentum, nesterov_momentum]:
-        updates = solver(cost, params, learning_rate, momentum)
+        updates = solver(classifier.cost, classifier.params, learning_rate, momentum)
     else:
-        updates = solver(cost, params, learning_rate)
-    # updates = []
-    # for param in classifier.params + extractfeat.params:
-    #     param_update = theano.shared(param.get_value()*np.cast[theano.config.floatX](0.))
-    #     updates.append((param,
-    #         param - learning_rate * param_update))
-    #     updates.append((param_update,
-    #         momentum*param_update +
-    #         (np.cast[theano.config.floatX](1.)-momentum)*T.grad(cost, param)))
+        updates = solver(classifier.cost, classifier.params, learning_rate)
     train_model = theano.function(
             inputs=[index],
-            outputs=cost,
+            outputs=classifier.cost,
             updates=updates,
             givens={
                 x: train_set_x[index * batch_size: (index + 1) * batch_size],
@@ -114,17 +132,15 @@ def test_cnn(init_learning_rate=.04,
     ###############
     # TRAIN MODEL #
     ###############
-    print '... training'
+    print '... training the model'
     patience = 1000
     patience_increase = 2
     improvement_threshold = 0.995
     validation_frequency = min(n_train_batches, patience/2)
-
     best_validation_loss = np.inf
     best_iter = 0
     test_score = 0.
     start_time = timeit.default_timer()
-
     epoch = 0
     done_looping = False
 
@@ -134,57 +150,45 @@ def test_cnn(init_learning_rate=.04,
 
     while (epoch < n_epochs) and (not done_looping):
         epoch = epoch + 1
-        print "momentum: {}".format(momentum.get_value())
-        print "learning_rate: {}".format(learning_rate.get_value())
-
-        for minibatch_index in xrange(n_train_batches):
-            iter = (epoch - 1) * n_train_batches + minibatch_index
-            if iter % 100 == 0: print 'training @ iter = ', iter
+        print "momentum:\t{}".format(momentum.get_value())
+        print "learning_rate:\t{}".format(learning_rate.get_value())
+        for batch_idx in xrange(n_train_batches):
+            iternum = (epoch - 1) * n_train_batches + batch_idx
+            if iternum % 100 == 0: print 'training @ iternum = ', iternum
             # train minibatch
-            cost_ij = train_model(minibatch_index)
+            _ = train_model(batch_idx)
             # validate model
-            if (iter + 1) % validation_frequency == 0:
-                validation_losses = [validate_model(i)[0] for i
-                                     in xrange(n_valid_batches)]
+            if (iternum + 1) % validation_frequency == 0:
+                validation_losses = [validate_model(i)[0] for i in xrange(n_valid_batches)]
                 this_validation_loss = np.mean(validation_losses)
-                print('[Validation] epoch %i, minibatch %i/%i, validation error %f %%' %
-                      (epoch, minibatch_index + 1, n_train_batches,
-                       this_validation_loss * 100.))
+                print('[Valid]\tepoch %i, minibatch %i/%i, validation error %f %%' %
+                      (epoch, batch_idx + 1, n_train_batches, this_validation_loss * 100.))
                 # check if best model
                 if this_validation_loss < best_validation_loss:
-                    if this_validation_loss < best_validation_loss *  \
-                       improvement_threshold:
-                        patience = max(patience, iter * patience_increase)
+                    if this_validation_loss < best_validation_loss * improvement_threshold:
+                        patience = max(patience, iternum * patience_increase)
                     best_validation_loss = this_validation_loss
-                    best_iter = iter
+                    best_iter = iternum
                     # save the best model
-                    # with open('bestmodel.pkl', 'wb') as f:
-                    #     pkl.dump(classifier, f)
+                    with open('cnn.model', 'wb') as f: pkl.dump(classifier, f)
                     # test model
-                    test_losses = [
-                        test_model(i)[0]
-                        for i in xrange(n_test_batches)]
+                    test_losses = [test_model(i)[0] for i in xrange(n_test_batches)]
                     test_score = np.mean(test_losses)
-                    print(('[Test] epoch %i, minibatch %i/%i, test error of '
-                           'best model %f %%') %
-                          (epoch, minibatch_index + 1, n_train_batches,
-                           test_score * 100.))
+                    print(('[Test]\tepoch %i, minibatch %i/%i, test error %f %%') %
+                          (epoch, batch_idx + 1, n_train_batches, test_score * 100.))
                     if N == 1:
-                        test_py = [
-                                test_model(i)[1]
-                                for i in xrange(n_test_batches)]
+                        test_py = [test_model(i)[1] for i in xrange(n_test_batches)]
                         y_scores = np.array([a[1] for batch in test_py for a in batch])
                         y_pred = np.array([score>0.5 for score in list(y_scores)])
                         fpr, tpr, _ = metrics.roc_curve(y_true, y_scores)
                         precision, recall, _ = metrics.precision_recall_curve(y_true, y_scores)
-                        print '    ROC AUC score is {}'.format(metrics.roc_auc_score(y_true, y_scores))
-                        print '    Precision score is {}'.format(metrics.precision_score(y_true, y_pred))
+                        print '[Test]\tROC AUC score is {}'.format(metrics.roc_auc_score(y_true, y_scores))
+                        print '[Test]\tPrecision score is {}'.format(metrics.precision_score(y_true, y_pred))
 
-            if patience <= iter:
+            if patience <= iternum:
                 done_looping = True
                 break
-
-        if momentum.get_value() < .99:
+        if momentum.get_value() < .9:
             new_momentum = 1. - (1. - momentum.get_value()) * 0.98
             momentum.set_value(np.cast[theano.config.floatX](new_momentum))
         new_learning_rate = learning_rate.get_value() * 0.99
@@ -192,31 +196,32 @@ def test_cnn(init_learning_rate=.04,
 
     end_time = timeit.default_timer()
     print('Optimization complete.')
-    print('Best validation score of %f %% obtained at iteration %i, '
-          'with test performance %f %%' %
+    print('Best validation score of %f %% obtained at iteration %i, with test performance %f %%' %
           (best_validation_loss * 100., best_iter + 1, test_score * 100.))
-    print >> sys.stderr, ('The code for file ' +
-                          os.path.split(__file__)[1] +
+    print >> sys.stderr, ('The code for file ' + os.path.split(__file__)[1] +
                           ' ran for %.2fm' % ((end_time - start_time) / 60.))
-    # classifier = pkl.load(open('bestmodel.pkl', 'r'))
-    # predictmodel = theano.function(
-    #         inputs=[classifier.input],
-    #         outputs=[classifier.y_pred])
-    # test_set_x = test_set_x.get_value()
-    # y_pred = predictmodel(test_set_x)
-    # y_true = test_set_y.get_value()
-    # print y_pred
-    # print y_true
+
+    ######################
+    # TEST LEARNED MODEL #
+    ######################
+    classifier = pkl.load(open('cnn.model', 'r'))
+    predictmodel = theano.function(
+            inputs=[classifier.x],
+            outputs=[classifier.y_pred],
+            givens={
+                classifier.is_train: np.cast['int32'](0)})
+    test_set_x = test_set_x.get_value()
+    y_pred = predictmodel(test_set_x)
+    y_true = test_set_y.get_value()
+    print y_pred
+    print y_true
 
 
 if __name__ == '__main__':
-    test_cnn(init_learning_rate=.1,
-             init_momentum=.05,
-             n_epochs=1000,
-             dataset='../DeepLearningTutorials/data/mnist.pkl.gz',
+    test_cnn(dataset='../DeepLearningTutorials/data/mnist.pkl.gz',
              h=28,
              w=28,
-             batch_size=100,
+             batch_size=400,
              convnames=['conv0', 'conv1'],
              nkerns=[100, 20],
              filtersizes=[(4,4), (4,4)],
@@ -224,6 +229,8 @@ if __name__ == '__main__':
              strides=[(2,2), (2,2)],
              nodenums=[100, 20, 10],
              dmlpnames=['fc0', 'fc1', 'softmax'],
-             ps=[0.9, 0.9],
-             solver=sgd_momentum)
-    # test_cnn()
+             ps=[0.7, 0.7],
+             solver=nesterov_momentum,
+             init_learning_rate=.1,
+             init_momentum=.05,
+             n_epochs=100)

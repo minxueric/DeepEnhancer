@@ -2,6 +2,7 @@
 # encoding: utf-8
 
 import cPickle as pkl
+import hickle as hkl
 import numpy as np
 from sklearn.cross_validation import StratifiedKFold
 
@@ -12,7 +13,7 @@ NEG_PKL = './data/ubiquitous_negative.pkl'
 POS_REF = './data/ubiquitous_positive_refine.pkl'
 NEG_REF = './data/ubiquitous_negative_refine.pkl'
 
-DATA = './data/ubiquitous_refine.pkl'
+DATA = './data/ubiquitous_refine.hkl'
 KFD = './data/ubiquitous_kfold.pkl'
 
 def readop(opfile):
@@ -34,12 +35,15 @@ negop_s = sorted(enumerate(negop), key=lambda x: x[1])
 [pos_idx, pos_ops] = zip(*posop_s)
 [neg_idx, neg_ops] = zip(*negop_s)
 
-# find maximal subset that min(pos_ops) > max(neg_ops)
-maxsubset = len(pos_ops)
-while pos_ops[-maxsubset] <= neg_ops[maxsubset - 1]:
-    maxsubset -= 1
-print 'Maximal subsets contains {} samples statisfying pos_op > neg_op'.format(maxsubset)
-print 'The minimal #openness of pos is {}, the maximal #openness of neg is {}'.format(pos_ops[-maxsubset], neg_ops[maxsubset-1])
+# # find maximal subset that min(pos_ops) > max(neg_ops)
+# maxsubset = len(pos_ops)
+# while pos_ops[-maxsubset] <= neg_ops[maxsubset - 1]:
+#     maxsubset -= 1
+# print 'Maximal subsets contains {} samples statisfying pos_op > neg_op'.format(maxsubset)
+# print 'The minimal #openness of pos is {}, the maximal #openness of neg is {}'.format(pos_ops[-maxsubset], neg_ops[maxsubset-1])
+
+# omit 1000 misclassified samples
+maxsubset = len(pos_ops) - 1000
 
 pos = pkl.load(open(POS_PKL, 'r'))
 neg = pkl.load(open(NEG_PKL, 'r'))
@@ -79,10 +83,10 @@ labels = [1] * maxsubset + [0] * maxsubset
 skf = StratifiedKFold(labels, n_folds=10, shuffle=True)
 pkl.dump(skf, open(KFD, 'w'))
 
-# y = np.array(labels)
-# Xpos = np.vstack([seq2mat(item[-1]) for item in pos_refine])
-# Xneg = np.vstack([seq2mat(item[-1]) for item in neg_refine])
-# X = np.vstack((Xpos, Xneg))
+y = np.array(labels)
+Xpos = np.vstack([seq2mat(item[-1]) for item in pos_refine])
+Xneg = np.vstack([seq2mat(item[-1]) for item in neg_refine])
+X = np.vstack((Xpos, Xneg))
 
-# pkl.dump((X, y), open(DATA, 'w'))
+hkl.dump((X, y), DATA, mode='w', compression='gzip')
 
